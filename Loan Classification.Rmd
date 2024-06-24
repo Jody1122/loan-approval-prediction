@@ -1,0 +1,404 @@
+---
+title: "Loan Classcification"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+  html_notebook: default
+date: "2024-06-19"
+---
+
+### 1. DATA WRANGLING 
+#### 1.1 Read dataset 
+
+```{r}
+#install.packages("ggridges")
+#install.packages("nnet")
+#install.packages("effects")
+library('nnet')
+library('ISLR')
+library('ggplot2')
+library('ggridges')
+library(lattice)
+library(caret)
+library(tree)
+library(MASS)
+library(ISLR)
+```
+
+
+```{r} 
+loan = read.csv("C:/Users/Admin/My Drive/MDSA/606/Final Project/loan.csv")
+head(loan,n=5)
+```
+#### 1.2 Check NA values
+```{R}
+anyNA(loan)
+sum(is.na(loan))
+colSums(is.na(loan))
+```
+
+None of the targeted columns has NA value. 
+
+#### 3. encoding column emp_length
+
+```{r}
+# trimws() for trimming whitespace more cleanly
+loan$emp_length <- trimws(loan$emp_length) 
+loan$emp_length <- gsub(" years", "", loan$emp_length)  # Remove " years"
+loan$emp_length <- gsub(" year", "", loan$emp_length)  # Remove " years"
+loan$emp_length[grepl("< 1", loan$emp_length)] <- 0.5
+loan$emp_length[grepl("n/a", loan$emp_length)] <- 0
+loan$emp_length[grepl("10+", loan$emp_length)] <- 10
+
+loan$emp_length <-as.numeric(loan$emp_length)
+
+dim(loan)
+```
+#### 4. Column ID - Remove one value ID 377376
+
+This applicant has revol_balance 49,238 but the revol_util is blank. 
+
+```{r}
+loan <- loan[loan$id != 377376, ]
+dim(loan)
+```
+
+
+#### 5. Column int_rate and revol_until 
+
+
+```{r}
+loan$int_rate <- gsub("%", "", loan$int_rate)  # Remove " years"
+loan$revol_util <- gsub("%", "", loan$revol_util)  # Remove " years"
+
+
+loan$revol_util <- as.numeric(loan$revol_util)
+loan$int_rate <- as.numeric(loan$int_rate)
+
+column_type <- class(loan$revol_util)
+print(column_type)
+```
+
+```{r}
+sapply(loan, class)
+```
+
+```{r}
+write.csv(loan, "cleaned_loan.csv", row.names = FALSE)
+```
+
+### 2. ANALYSIS 
+
+#### 2.1 EDA analysis
+**How does the loan amount relate to the borrower's ability to pay, as indicated by the loan grade?** 
+
+
+```{r}
+ggplot(loan, aes(x = grade, y = loan_amnt, fill=grade)) +
+  geom_boxplot() +
+  labs(title = "Loan Amount Distribution by Grade",
+       x = "Loan Grade",
+       y = "Loan Amount") +
+  theme_minimal()
+```
+From the boxplot, we can see that the Grade A loans have the lowest median loan amount of all and have many outliers above the upper whisker which suggests higher variability among the larger loan amounts. Grade G, however, is the highest median loan amount suggesting borrowers with higher risk profile take larger loans and may have higher interest rates. 
+
+**Which grades are most common for loans with a 'Charged Off' status?**
+```{r}
+library(ggplot2)
+
+# Filter for 'Charged Off' loans
+charged_off_loans <- loan[loan$loan_status == "Charged Off", ]
+
+# Create a data frame of counts
+grade_counts <- as.data.frame(table(charged_off_loans$grade))
+
+# Rename the columns appropriately
+names(grade_counts) <- c("Grade", "Frequency")
+
+# Create a bar plot
+ggplot(grade_counts, aes(x = Grade, y = Frequency, fill = Grade)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Frequency of Loan Grades for 'Charged Off' Loans",
+       x = "Loan Grade",
+       y = "Frequency") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")  # Optional: Adds a color palette
+```
+Grade B&C show notably higher frequencies of charge-offs compared to other grades. This implies that loans classified under these grades have a higher risk of default. Loans with grades F & G might be considered lower risk, which could influence more favor in approval processes. 
+
+**Which states have the highest and lowest loan amounts from their residents?**
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Assuming 'loan' is your data frame and it has columns 'state' and 'loan_amnt'
+# Calculate average loan amount per state
+state_loan_summary <- loan %>%
+  group_by(addr_state) %>%
+  summarise(AverageLoan = mean(loan_amnt, na.rm = TRUE)) %>%
+  arrange(desc(AverageLoan))
+
+# Plot the data
+ggplot(state_loan_summary, aes(x = reorder(addr_state, AverageLoan), y = AverageLoan, fill = AverageLoan)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Average Loan Amount by State",
+       x = "State",
+       y = "Average Loan Amount ($)") +
+  theme_minimal() +
+  scale_fill_gradient(low = "lightblue", high = "blue") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  # Rotate x labels for better visibility
+```
+**How do the features correlate with each other?**
+
+
+```{r}
+library(GGally)
+# ggpair plots for selected variables including the target
+ggpairs(loan[, c("loan_amnt", "annual_inc", "revol_util", "int_rate","installment","emp_length","dti")])
+```
+
+Based on this correlation chart, it looks like these variables are not correlated with each other. 
+**How balance the loan_class?**
+```{r}
+ggplot(loan, aes(x = loan_class)) + 
+  geom_bar(fill = "blue", alpha = 0.7) +
+  labs(title = "Distribution of Loan Class", x = "Loan Class", y = "Frequency") +
+  theme_minimal()
+```
+
+
+#### 2.2 Independence Discussion 
+
+```{r}
+# encoding loan_class column
+loan$loan_class <- ifelse(loan$loan_status == "Charged Off", 0, 1)
+head(loan)
+```
+
+```{r}
+abc <- table(loan$loan_class,loan$loan_amnt)
+abc
+chisq.test(abc)
+```
+
+- As p value < 0.05, we should reject Null Hypothesis, loan_status and loan_amount are depended on each other 
+
+
+#### 2.2 Multinomial Logistic Regression: How effectively can a multinomial logistic regression model, trained on historical loan application data, predict loan approval or denial based on applicant profiles?
+
+#### 2.2.1 Initial Screening 
+```{r}
+#status<-multinom(loan_status~loan_amnt+annual_inc+revol_util+factor(grade)+factor(term)+int_rate+installment+emp_length+dti+factor(home_ownership), data=loan)
+#summary(status)
+```
+
+```{r}
+status<-glm(loan_class~loan_amnt+annual_inc+revol_util+factor(grade)+factor(term)+int_rate+installment+emp_length+dti+factor(home_ownership), family=binomial, data=loan)
+summary(status)
+```
+```{r}
+status01<-glm(loan_class~annual_inc+revol_util+factor(grade)+factor(term)+int_rate, family=binomial, data=loan)
+summary(status01)
+```
+```{r}
+library(regclass)
+VIF(status01)
+```
+**Remove highly correlated variables - remove "Grade"
+```{r}
+status02<-glm(loan_class~annual_inc+revol_util+factor(term)+int_rate, family=binomial, data=loan)
+summary(status02)
+VIF(status02)
+```
+```{r}
+status03<-glm(loan_class~annual_inc+revol_util+factor(grade)+factor(term), family=binomial, data=loan)
+summary(status03)
+VIF(status03)
+```
+#### 2.2.2 Misclassification rates among different sampling techniques 
+**Stratified sampling: Seperate the dataset into 2 parts (training and test), the training part contains the first 80% data while the test part contains the rest 20% data**
+
+```{r}
+library(caret)
+set.seed(2023)  # Setting seed for reproducibility
+
+# Create the indices for the training set
+trainIndex <- createDataPartition(loan$loan_class, p = 0.8, list = FALSE, times = 1)
+
+# Create training and test sets
+train <- loan[trainIndex, ]
+test <- loan[-trainIndex, ]
+
+# Check the number of rows in each part
+cat("Training set rows:", nrow(train), "\n")
+cat("Test set rows:", nrow(test), "\n")
+```
+
+```{r}
+
+## Apply the logistic regression to the training part
+  Model.fit<-glm(loan_class~annual_inc+revol_util+factor(grade)+factor(term),family = binomial,data=train) 
+
+
+##  predict the probability of default of the test part using the fitted model 
+Prob.predict<-predict(Model.fit,test,type="response")
+
+## initializes a vector default.predict of length 7943 with all values set to "No"
+class.predict=rep("0",7943)
+
+
+## changes values in the default.predict vector to "1" where the predicted probability of default is 0.5 or higher
+class.predict[Prob.predict>=0.5]="1"
+
+# extracts the actual default status from the test dataset to compare against the predictions.
+actual=test$loan_class
+#actual
+
+# creates a contingency table from the predicted and actual default statuses.
+table(class.predict,actual)
+```
+
+
+**Misclassification rate**
+
+```{r}
+ cm <- confusionMatrix(table(class.predict, test$loan_class))
+    accuracy <- cm$overall['Accuracy']*100
+    mis_rate <- 100-accuracy
+cat("Misclassification rate: ", mis_rate, "%", "\n")
+```    
+
+**Simple random sampling: Seperate the dataset into 2 parts (training and test), the training part contains the first 80% data while the test part contains the rest 20% data**
+
+```{r}
+set.seed(2023)
+
+trainSet<-loan[1:31773,]
+testSet<-loan[31774:39716,]
+
+cat("Training set rows:", nrow(trainSet), "\n")
+cat("Test set rows:", nrow(testSet), "\n")
+```
+```{r}
+
+## Apply the logistic regression to the training part
+  Model.fit01<-glm(loan_class~annual_inc+revol_util+factor(grade)+factor(term),family = binomial,data=trainSet) 
+
+
+##  predict the probability of default of the test part using the fitted model 
+Prob.predict01<-predict(Model.fit01,testSet,type="response")
+
+## initializes a vector default.predict of length 7943 with all values set to "No"
+class.predict01=rep("0",7943)
+
+
+## changes values in the default.predict vector to "1" where the predicted probability of default is 0.5 or higher
+class.predict01[Prob.predict01>=0.5]="1"
+
+# extracts the actual default status from the test dataset to compare against the predictions.
+actual01=testSet$loan_class
+#actual
+
+# creates a contingency table from the predicted and actual default statuses.
+table(class.predict01,actual01)
+```
+
+**Misclassification rate**
+
+```{r}
+ cm01 <- confusionMatrix(table(class.predict01, testSet$loan_class))
+    accuracy01 <- cm01$overall['Accuracy']*100
+    mis_rate01 <- 100-accuracy01
+cat("Misclassification rate: ", mis_rate01, "%", "\n")
+```    
+
+**Cluster sampling: Seperate the dataset into 2 parts (training and test) by clusters grouped by regions_States**
+
+
+```{r}
+clusters <- unique(loan$addr_state)
+sampled_clusters_train <- sample(clusters, size = 40)  # randomly sample 10 clusters
+
+sampled_clusters_test <- setdiff(clusters, sampled_clusters_train)
+
+trainSet02 <- loan %>% filter(addr_state %in% sampled_clusters_train)
+testSet02 <- loan %>% filter(addr_state %in% sampled_clusters_test)
+
+
+# Assuming 'loan_class' is your target variable
+model_cluster <- glm(loan_class~annual_inc+revol_util+factor(grade)+factor(term), 
+             family = binomial, data = trainSet02)
+
+# Summary of the model
+summary(model_cluster)
+```
+```{r}
+dim(testSet02)
+```
+
+```{r}
+##  predict the probability of default of the test part using the fitted model 
+Prob.predict02<-predict(model_cluster,testSet02,type="response")
+
+## initializes a vector default.predict of length 7943 with all values set to "No"
+class.predict02=rep("0",4331)
+
+
+## changes values in the default.predict vector to "1" where the predicted probability of default is 0.5 or higher
+class.predict02[Prob.predict02>=0.5]="1"
+
+# extracts the actual default status from the test dataset to compare against the predictions.
+actual02=testSet02$loan_class
+#actual
+
+# creates a contingency table from the predicted and actual default statuses.
+table(class.predict02,actual02)
+```
+```{r}
+ cm02 <- confusionMatrix(table(class.predict02, testSet02$loan_class))
+    accuracy02 <- cm02$overall['Accuracy']*100
+    mis_rate02 <- 100-accuracy02
+cat("Misclassification rate: ", mis_rate02, "%", "\n")
+```  
+
+#### 2.3 Linear Discriminant Analysis 
+
+```{R}
+set.seed (2023)
+train=sample(1:nrow(loan),4/5*nrow(loan))
+test=loan[-train,]
+status04<-lda(loan_class~loan_amnt+annual_inc+revol_util+factor(grade)+factor(term)+int_rate+installment+emp_length+dti+factor(home_ownership),data=loan,subset=train)
+status04
+```
+**Plot the tree**
+```{r}
+plot(status04)
+```
+There is considerable overlap in the discriminant scores of both groups around the center, indicating that there is some similarity between the groups based on the predictors used. The histograms suggest that while there may be some level of discrimination achievable with the model, there might still be a significant number of cases where it could be challenging to correctly classify an outcome based on the linear discriminant alone. 
+
+**Apply the model to the test part.**
+```{r}
+lda.pred=predict(status04, newdata=test)
+names(lda.pred)
+```
+```{r}
+#confusion matrix 
+confusion_matrix <- table(lda.pred$class, test$loan_class)
+library(caret)
+confusionMatrix(confusion_matrix)
+```
+The model accurately predicts the correct class 85.15% of the time. However, The Cohen's Kappa score is very low, indicating poor agreement between the predicted and actual values, beyond what would be expected by chance. This is another indicator that the model may not be effective.
+When the model predicts a positive outcome, it is correct about 83.33% of the time. However, due to the extremely low sensitivity, this metric might not be very meaningful.
+Detection Rate is the rate at which the model successfully identifies true positives, which is very low.
+Balanced Accuracy:Considering both sensitivity and specificity, this metric provides an average that is just over 50%, indicating poor overall accuracy across both classes.
+Overall, The model is not performing well in predicting the positive class (class '0'). It has high specificity but very low sensitivity, indicating it almost never predicts positives correctly.
+
+### 3. CONCLUSION
+
+Different sets of variables are examined in our models due to the simplifying processes to make our models significant. The LDA model, despite high overall accuracy, got balanced accuracy at 51.07% indicating a model skewed towards predicting positives. This suggests it might be overfitting to the majority class. The logistic regression models, depending on their misclassification rates, offer a more balanced approach between identifying both classes. However, specific metrics like sensitivity, specificity, and kappa as the outputs from LDA are needed for a direct comparison. 
+
+
