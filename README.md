@@ -1,4 +1,4 @@
-# Loan Classification 
+# Loan Approval Prediction using R
 
 ## Introduction
 
